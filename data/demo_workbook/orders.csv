@@ -1,0 +1,16 @@
+order_id,customer_id,product,amount,order_date,channel
+1,101,Product A,125.50,2024-03-15,organic
+2,102,Product B,89.99,2024-03-16,paid
+3,101,Product C,210.00,2024-03-20,organic
+4,103,Product A,145.75,2024-03-22,referral
+5,102,Product D,99.50,2024-03-25,paid
+6,104,Product B,175.25,2024-03-28,organic
+7,105,Product C,250.00,2024-04-01,paid
+8,101,Product E,89.99,2024-04-05,organic
+9,103,Product A,125.50,2024-04-10,referral
+10,106,Product F,199.99,2024-04-12,paid
+11,102,Product B,145.75,2024-04-15,organic
+12,104,Product D,99.50,2024-04-18,referral
+13,107,Product A,89.99,2024-04-20,paid
+14,105,Product C,210.00,2024-04-22,organic
+15,108,Product E,175.25,2024-04-25,paid

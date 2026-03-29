@@ -1,0 +1,9 @@
+customer_id,name,email,channel,created_at,lifetime_value
+101,Alice Johnson,alice@example.com,organic,2023-01-15,1234.50
+102,Bob Smith,bob@example.com,paid,2023-02-20,2456.75
+103,Charlie Brown,charlie@example.com,referral,2023-03-10,890.25
+104,Diana Prince,diana@example.com,organic,2023-04-05,1567.89
+105,Eve Wilson,eve@example.com,paid,2023-05-12,3210.00
+106,Frank Miller,frank@example.com,organic,2023-06-18,1123.45
+107,Grace Lee,grace@example.com,paid,2023-07-22,2789.99
+108,Henry Davis,henry@example.com,referral,2023-08-30,456.78
