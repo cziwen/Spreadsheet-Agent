@@ -126,47 +126,6 @@ def scenarios(
         raise typer.Exit(code=1)
 
 
-@app.command()
-def demo():
-    """Run demo queries showcasing all features."""
-    try:
-        from agent.core.llm_client import LLMClient
-
-        api_key = os.getenv("GOOGLE_API_KEY")
-
-        if not api_key:
-            rprint(
-                "[red]❌ Error: GOOGLE_API_KEY not set.[/red]\n"
-                "Please set your API key in .env file or environment variable."
-            )
-            raise typer.Exit(code=1)
-
-        llm = LLMClient(api_key=api_key)
-        lead_agent = LeadAgent(llm)
-
-        demo_queries = [
-            "统计订单表的订单总数和平均金额",
-            "检查订单表的数据质量",
-            "创建一个场景，订单金额增加10%",
-        ]
-
-        for i, query_text in enumerate(demo_queries, 1):
-            console.print(f"\n{'='*60}")
-            console.print(f"[bold cyan]Demo Query {i}/{len(demo_queries)}[/bold cyan]")
-            console.print(f"{'='*60}\n")
-
-            result = lead_agent.process_query(query_text)
-            _display_result(result)
-
-            if i < len(demo_queries):
-                console.print("[dim]Press Enter to continue to next demo...[/dim]")
-                input()
-
-    except Exception as e:
-        rprint(f"[red]❌ Error: {str(e)}[/red]")
-        raise typer.Exit(code=1)
-
-
 def _display_result(result: dict):
     """Display result based on query type.
 

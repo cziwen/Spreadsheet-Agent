@@ -22,23 +22,24 @@ pip install -r requirements.txt
 python cli.py load-data
 ```
 
-### Run Queries
+### Interactive Chat Mode
+
 ```bash
-# Cross-table analysis
-python cli.py query "统计订单表的订单总数和平均金额"
+# Start interactive chat session (by default on data/demo_workbook)
+python chat.py
 
-# Data quality check
-python cli.py query "检查订单表的数据质量"
-
-# Create scenario
-python cli.py query "创建一个场景，订单金额增加10%"
-
-# View scenarios
-python cli.py scenarios
-
-# Run interactive demo
-python cli.py demo
+# Custom workbook
+python chat.py --workbook data/my_workbook
 ```
+
+**Commands in chat mode:**
+- `help` - Show available commands and query types
+- `tables` - List all tables with row counts and columns
+- `history` - View recent queries and their status
+- `reload` - Reload workbook data from disk
+- `clear` - Clear screen
+- `exit` / `quit` - Exit the chat session
+- "统计订单表的订单总数" - a query
 
 ### Workbooks
 
@@ -52,20 +53,6 @@ python cli.py demo
    - order_id, customer_id, product, amount, order_date, channel
    - Orders linked to customers via customer_id
 
-**Use custom workbook:**
-```bash
-# 1. Create workbook directory
-mkdir data/my_workbook
-
-# 2. Add CSV files
-cp your_data.csv data/my_workbook/
-cp another_table.csv data/my_workbook/
-
-# 3. Run agent on custom workbook
-python cli.py query "your query" --workbook data/my_workbook
-python cli.py load-data --workbook data/my_workbook
-python cli.py scenarios --workbook data/my_workbook
-```
 ---
 
 ## Core Components 
