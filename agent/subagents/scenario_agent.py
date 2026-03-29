@@ -12,6 +12,27 @@ from agent.core.data_engine import DataEngine
 class ScenarioAgent:
     """Agent for scenario management and scenario comparison."""
 
+    # Catalog of safe, declarative operations for LLM to use
+    AVAILABLE_OPERATIONS = {
+        "modify_column": {
+            "description": "Modify column values by percentage",
+            "params": {
+                "table": "Table name",
+                "column": "Column name to modify",
+                "percentage": "Percentage change (positive for increase, negative for decrease)",
+                "condition": "Optional: Filter condition (e.g., 'amount > 200')"
+            }
+        },
+        "conditional_modify": {
+            "description": "Apply different modifications based on conditions",
+            "params": {
+                "table": "Table name",
+                "column": "Column to modify",
+                "rules": "List of {condition, percentage} rules to apply"
+            }
+        }
+    }
+
     def __init__(self, llm_client: LLMClient, data_engine: DataEngine):
         """Initialize scenario agent.
 
@@ -103,10 +124,276 @@ Return JSON:
 
         try:
             result = self.llm.call_structured(prompt)
+            result["query"] = query  # Add original query for plan generation
             return result
         except Exception as e:
             print(f"  Warning: Could not parse operation: {e}")
-            return {"type": "unknown"}
+            return {"type": "unknown", "query": query}
+
+    def _generate_modification_plan(
+        self, query: str, workbook: Dict[str, pd.DataFrame], parameters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate modification plan using LLM.
+
+        Args:
+            query: Original user query
+            workbook: Available tables
+            parameters: Parsed parameters from _parse_operation()
+
+        Returns:
+            Structured plan with steps to execute
+        """
+        # Build context: table schemas
+        schemas = {}
+        for table_name, df in workbook.items():
+            numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+            schemas[table_name] = {
+                "columns": list(df.columns),
+                "numeric_columns": numeric_cols,
+                "sample_values": {col: df[col].head(2).tolist() for col in numeric_cols[:3]}
+            }
+
+        prompt = f"""
+User query: "{query}"
+Parsed parameters: {json.dumps(parameters)}
+
+Available tables and columns:
+{json.dumps(schemas, indent=2)}
+
+Available operations for scenario modification:
+{json.dumps(self.AVAILABLE_OPERATIONS, indent=2)}
+
+Your task: Generate a modification plan that transforms the data according to the user's intent.
+
+Important rules:
+1. Only modify numeric columns (not IDs, dates, or text)
+2. Skip columns ending in '_id' or named 'id'
+3. For conditional queries (e.g., "orders above $200 increase by 20%"), use conditional_modify operation
+4. For simple queries (e.g., "all orders increase by 10%"), use modify_column operation
+5. Match column names intelligently (e.g., "revenue" → "amount", "sales" → "amount")
+6. Each step must reference actual table/column names from the schemas
+
+Examples:
+
+Query: "Create scenario where order amounts increase by 10%"
+→ {{
+    "steps": [
+        {{
+            "operation": "modify_column",
+            "params": {{
+                "table": "orders",
+                "column": "amount",
+                "percentage": 10,
+                "condition": null
+            }},
+            "description": "Increase all order amounts by 10%"
+        }}
+    ],
+    "reasoning": "Simple percentage increase to all order amounts"
+}}
+
+Query: "Create scenario where orders above $200 increase by 20% and below increase by 5%"
+→ {{
+    "steps": [
+        {{
+            "operation": "conditional_modify",
+            "params": {{
+                "table": "orders",
+                "column": "amount",
+                "rules": [
+                    {{"condition": "amount > 200", "percentage": 20}},
+                    {{"condition": "amount <= 200", "percentage": 5}}
+                ]
+            }},
+            "description": "Apply 20% increase to high-value orders, 5% to others"
+        }}
+    ],
+    "reasoning": "Differentiated strategy based on order value"
+}}
+
+Generate the modification plan:
+"""
+
+        try:
+            plan = self.llm.call_structured(prompt)
+            return plan
+        except Exception as e:
+            print(f"  Warning: Could not generate plan: {e}")
+            # Fallback: generate simple plan
+            return self._generate_fallback_plan(parameters, workbook)
+
+    def _generate_fallback_plan(
+        self, parameters: Dict[str, Any], workbook: Dict[str, pd.DataFrame]
+    ) -> Dict[str, Any]:
+        """Generate fallback plan when LLM fails."""
+        steps = []
+
+        for param_name, param_value in parameters.items():
+            if isinstance(param_value, (int, float)):
+                # Try to find matching table/column
+                for table_name, df in workbook.items():
+                    for col in df.columns:
+                        if "amount" in col.lower() or "value" in col.lower():
+                            if pd.api.types.is_numeric_dtype(df[col]) and not (col.endswith("id") or "_id" in col):
+                                steps.append({
+                                    "operation": "modify_column",
+                                    "params": {
+                                        "table": table_name,
+                                        "column": col,
+                                        "percentage": param_value,
+                                        "condition": None
+                                    },
+                                    "description": f"Modify {table_name}.{col} by {param_value}%"
+                                })
+                                break
+
+        return {
+            "steps": steps,
+            "reasoning": "Fallback plan: applied modifications to likely business metric columns"
+        }
+
+    def _execute_plan(
+        self, plan: Dict[str, Any], scenario_data: Dict[str, Any]
+    ) -> Dict[str, List[str]]:
+        """Execute modification plan safely.
+
+        Args:
+            plan: LLM-generated plan with steps
+            scenario_data: Scenario data with tables as DataFrames
+
+        Returns:
+            Dictionary of modified columns per table
+        """
+        modified_columns = {}
+        steps = plan.get("steps", [])
+
+        for i, step in enumerate(steps, 1):
+            operation = step.get("operation")
+            params = step.get("params", {})
+            description = step.get("description", "")
+
+            try:
+                if operation == "modify_column":
+                    self._execute_modify_column(scenario_data, params, modified_columns)
+                elif operation == "conditional_modify":
+                    self._execute_conditional_modify(scenario_data, params, modified_columns)
+                else:
+                    print(f"  ⚠ Unknown operation: {operation}")
+                    continue
+
+                print(f"  ✓ {description}")
+
+            except Exception as e:
+                print(f"  ✗ {description}: {e}")
+                continue
+
+        return modified_columns
+
+    def _execute_modify_column(
+        self, scenario_data: Dict[str, Any], params: Dict[str, Any], modified_columns: Dict[str, List[str]]
+    ) -> None:
+        """Execute simple column modification."""
+        table = params["table"]
+        column = params["column"]
+        percentage = params["percentage"]
+        condition = params.get("condition")
+
+        # Validate
+        if table not in scenario_data["tables"]:
+            raise ValueError(f"Table '{table}' not found")
+
+        df = scenario_data["tables"][table]
+
+        if column not in df.columns:
+            raise ValueError(f"Column '{column}' not found in {table}")
+
+        if not pd.api.types.is_numeric_dtype(df[column]):
+            raise ValueError(f"Column '{column}' is not numeric")
+
+        # Apply modification
+        multiplier = 1 + (percentage / 100)
+
+        if condition:
+            # Apply condition using pandas query
+            mask = df.eval(condition)
+            df.loc[mask, column] = df.loc[mask, column] * multiplier
+        else:
+            df[column] = df[column] * multiplier
+
+        # Track modification
+        if table not in modified_columns:
+            modified_columns[table] = []
+        if column not in modified_columns[table]:
+            modified_columns[table].append(column)
+
+    def _execute_conditional_modify(
+        self, scenario_data: Dict[str, Any], params: Dict[str, Any], modified_columns: Dict[str, List[str]]
+    ) -> None:
+        """Execute conditional modification with multiple rules."""
+        table = params["table"]
+        column = params["column"]
+        rules = params["rules"]
+
+        # Validate
+        if table not in scenario_data["tables"]:
+            raise ValueError(f"Table '{table}' not found")
+
+        df = scenario_data["tables"][table]
+
+        if column not in df.columns:
+            raise ValueError(f"Column '{column}' not found in {table}")
+
+        # Apply each rule
+        for rule in rules:
+            condition = rule["condition"]
+            percentage = rule["percentage"]
+            multiplier = 1 + (percentage / 100)
+
+            mask = df.eval(condition)
+            df.loc[mask, column] = df.loc[mask, column] * multiplier
+
+        # Track modification
+        if table not in modified_columns:
+            modified_columns[table] = []
+        if column not in modified_columns[table]:
+            modified_columns[table].append(column)
+
+    def _generate_summary(self, plan: Dict[str, Any], metrics: Dict[str, Any]) -> str:
+        """Generate natural language summary of scenario impact.
+
+        Args:
+            plan: Execution plan with reasoning and steps
+            metrics: Calculated before/after metrics
+
+        Returns:
+            Human-readable summary of business impact
+        """
+        summary_parts = []
+
+        # Add plan reasoning
+        if "reasoning" in plan:
+            summary_parts.append(f"• Scenario: {plan['reasoning']}")
+
+        # Add metric impacts
+        metric_impacts = []
+        for table_name, table_metrics in metrics.items():
+            for column_name, metric_data in table_metrics.items():
+                baseline = metric_data.get("baseline", 0)
+                scenario = metric_data.get("scenario", 0)
+                change = metric_data.get("change", 0)
+                change_pct = metric_data.get("change_pct", 0)
+
+                if baseline > 0:
+                    metric_impacts.append(
+                        f"• {table_name}.{column_name}: ${baseline:.2f} → ${scenario:.2f} "
+                        f"(+${change:.2f}, +{change_pct}%)"
+                    )
+
+        if metric_impacts:
+            summary_parts.append("Impact:")
+            summary_parts.extend(metric_impacts)
+
+        return "\n".join(summary_parts) if summary_parts else "No measurable impact"
 
     def _create_scenario(
         self, operation: Dict[str, Any], workbook: Dict[str, pd.DataFrame]
@@ -155,16 +442,47 @@ Return JSON:
         for table_name, df in workbook.items():
             scenario_data["tables"][table_name] = df.copy()
 
-        # Apply parameter modifications
-        scenario_data = self._apply_parameters(scenario_data, parameters)
+        # Generate modification plan using LLM
+        query = operation.get("query", "")
+        plan = self._generate_modification_plan(query, workbook, parameters)
 
-        # Calculate metrics BEFORE saving (while tables are still DataFrames)
-        for table_name, df in scenario_data["tables"].items():
-            numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-            if numeric_cols:
-                scenario_data["metrics"][table_name] = {
-                    col: float(df[col].sum()) for col in numeric_cols[:3]
-                }
+        print(f"  • Generated plan: {len(plan.get('steps', []))} step(s)")
+        if "reasoning" in plan:
+            print(f"  • Reasoning: {plan['reasoning']}\n")
+
+        # Execute the plan
+        modified_columns = self._execute_plan(plan, scenario_data)
+
+        # Calculate before/after metrics for ONLY modified columns
+        for table_name, modified_cols in modified_columns.items():
+            if not modified_cols:
+                continue
+
+            baseline_df = workbook[table_name]
+            scenario_df = scenario_data["tables"][table_name]
+
+            scenario_data["metrics"][table_name] = {}
+
+            for col in modified_cols:
+                # Skip ID columns from metrics
+                if "_id" in col.lower() or col.lower().endswith("id"):
+                    continue
+
+                if pd.api.types.is_numeric_dtype(baseline_df[col]):
+                    baseline_sum = float(baseline_df[col].sum())
+                    scenario_sum = float(scenario_df[col].sum())
+                    change = scenario_sum - baseline_sum
+                    change_pct = (change / baseline_sum * 100) if baseline_sum != 0 else 0
+
+                    scenario_data["metrics"][table_name][col] = {
+                        "baseline": baseline_sum,
+                        "scenario": scenario_sum,
+                        "change": change,
+                        "change_pct": round(change_pct, 2)
+                    }
+
+        # Generate natural language summary of business impact
+        scenario_data["summary"] = self._generate_summary(plan, scenario_data["metrics"])
 
         # Save scenario (DataFrames will be converted to JSON)
         self.data_engine.save_scenario(scenario_name, scenario_data)
@@ -177,65 +495,9 @@ Return JSON:
             "scenario_name": scenario_name,
             "parameters": parameters,
             "metrics": scenario_data["metrics"],
+            "summary": scenario_data.get("summary", ""),
             "message": f"Scenario '{scenario_name}' created with parameters: {parameters}",
         }
-
-    def _apply_parameters(
-        self, scenario_data: Dict[str, Any], parameters: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Apply parameter modifications to scenario tables.
-
-        Args:
-            scenario_data: Scenario data
-            parameters: Parameters to apply
-
-        Returns:
-            Modified scenario data
-        """
-        # Process different types of parameters
-        for param_name, param_value in parameters.items():
-            param_lower = param_name.lower()
-
-            # Look for numeric parameters (increase/decrease percentages)
-            if isinstance(param_value, (int, float)):
-                # Determine if increase or decrease
-                is_increase = "increase" in param_lower or "rise" in param_lower
-                is_decrease = "decrease" in param_lower or "reduce" in param_lower or "decline" in param_lower
-
-                if not (is_increase or is_decrease):
-                    # Legacy handling for "budget_increase", "cost_decrease" style params
-                    is_increase = True  # Default to increase
-
-                # Extract keywords from parameter name
-                # e.g., "order_amounts_increase" → ["order", "amounts"]
-                keywords = [word for word in param_lower.replace("_", " ").split()
-                           if word not in ["increase", "decrease", "rise", "reduce", "decline"]]
-
-                # Find matching columns across all tables
-                multiplier = (1 + param_value / 100) if is_increase else (1 - param_value / 100)
-
-                for table_name, df in scenario_data["tables"].items():
-                    for col in df.columns:
-                        col_lower = col.lower()
-                        # Match if any keyword appears in column name OR column name appears in keyword
-                        # This handles both "amount" matching "amounts" and "order" matching "order_id"
-                        matches = any(
-                            keyword in col_lower or col_lower in keyword
-                            for keyword in keywords
-                        )
-                        if matches:
-                            # Only apply to numeric columns
-                            if pd.api.types.is_numeric_dtype(df[col]):
-                                # Skip ID columns (prefer amount/value/price/quantity columns)
-                                if "_id" in col_lower or col_lower.endswith("id"):
-                                    # Only modify ID if explicitly mentioned in keywords
-                                    if not any(id_word in keyword for keyword in keywords for id_word in ["id", "identifier"]):
-                                        continue
-
-                                scenario_data["tables"][table_name][col] = df[col] * multiplier
-                                print(f"  Applied {param_value}% {'increase' if is_increase else 'decrease'} to {table_name}.{col}")
-
-        return scenario_data
 
     def _compare_scenarios(self, operation: Dict[str, Any]) -> Dict[str, Any]:
         """Compare multiple scenarios.

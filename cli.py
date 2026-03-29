@@ -328,14 +328,33 @@ def _display_scenario_result(result: dict):
 
         metrics = result.get("metrics", {})
         if metrics:
-            rprint(f"\n[cyan]Modified Data Summary:[/cyan]")
+            rprint(f"\n[cyan]Impact Summary:[/cyan]")
             for table, table_metrics in metrics.items():
                 rprint(f"  {table}:")
-                for metric, value in table_metrics.items():
-                    rprint(f"    • {metric}: {value:.2f}")
+                for col, metric_data in table_metrics.items():
+                    if isinstance(metric_data, dict) and "baseline" in metric_data:
+                        # Before/after format with comparison
+                        baseline = metric_data.get("baseline", 0)
+                        scenario = metric_data.get("scenario", 0)
+                        change = metric_data.get("change", 0)
+                        change_pct = metric_data.get("change_pct", 0)
 
-        # Show file location
+                        # Color code based on change direction
+                        change_color = "green" if change > 0 else "red" if change < 0 else "yellow"
+                        rprint(f"    • {col}: {baseline:.2f} → {scenario:.2f} "
+                              f"([{change_color}]{change:+.2f} / {change_pct:+.1f}%[/])")
+                    else:
+                        # Legacy format (just sum)
+                        rprint(f"    • {col}: {metric_data:.2f}")
+
+        # Show file location and description
         rprint(f"\n📁 [cyan]Saved to:[/cyan] data/demo_workbook/scenarios/{scenario_name}.json")
+        rprint(f"\n[dim]What the scenario does:[/dim]")
+        summary = result.get("summary", "")
+        if summary:
+            # Format summary nicely with indentation
+            for line in summary.split("\n"):
+                rprint(f"  {line}")
 
     elif operation == "compare":
         rprint(f"[bold green]✓ Scenario Comparison Complete[/bold green]")
