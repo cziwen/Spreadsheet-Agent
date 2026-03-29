@@ -308,6 +308,30 @@ def _display_quality_result(result: dict):
             )
 
 
+def _format_table_for_display(table_str: str, max_rows: int = 10) -> str:
+    """Format DataFrame string representation as readable table.
+
+    Args:
+        table_str: String representation of DataFrame
+        max_rows: Maximum rows to display
+
+    Returns:
+        Formatted table string
+    """
+    if not table_str:
+        return "No table data"
+
+    lines = table_str.strip().split('\n')
+
+    # Show header and first N rows
+    display_lines = lines[:max_rows + 1]  # +1 for header
+
+    if len(lines) > max_rows + 1:
+        display_lines.append(f"... and {len(lines) - max_rows - 1} more rows")
+
+    return '\n'.join(display_lines)
+
+
 def _display_scenario_result(result: dict):
     """Display scenario result."""
     operation = result.get("operation", "unknown")
@@ -355,6 +379,17 @@ def _display_scenario_result(result: dict):
             # Format summary nicely with indentation
             for line in summary.split("\n"):
                 rprint(f"  {line}")
+
+        # Show preview of modified tables
+        tables = result.get("tables", {})
+        if tables:
+            rprint(f"\n[dim]Modified data preview (first 5 rows):[/dim]")
+            for table_name, table_data in tables.items():
+                rprint(f"\n[yellow]📊 {table_name}[/yellow]")
+                formatted = _format_table_for_display(table_data, max_rows=5)
+                # Use code block for better formatting
+                rprint(f"[dim cyan]{formatted}[/dim cyan]")
+            rprint(f"\n[dim]💡 Tip: Full table data saved in JSON file[/dim]")
 
     elif operation == "compare":
         rprint(f"[bold green]✓ Scenario Comparison Complete[/bold green]")

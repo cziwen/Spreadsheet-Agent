@@ -358,6 +358,48 @@ Generate the modification plan:
         if column not in modified_columns[table]:
             modified_columns[table].append(column)
 
+    def export_scenario_to_csv(self, scenario_name: str, output_dir: str = None) -> Dict[str, str]:
+        """Export scenario tables to CSV files.
+
+        Args:
+            scenario_name: Name of scenario to export
+            output_dir: Directory to save CSV files (defaults to scenarios dir)
+
+        Returns:
+            Dictionary mapping table names to file paths
+        """
+        from pathlib import Path
+
+        if scenario_name not in self.data_engine.scenarios:
+            raise ValueError(f"Scenario '{scenario_name}' not found")
+
+        scenario_data = self.data_engine.scenarios[scenario_name]
+        tables = scenario_data.get("tables", {})
+
+        if not tables:
+            raise ValueError(f"No tables found in scenario '{scenario_name}'")
+
+        # Default output directory
+        if output_dir is None:
+            output_dir = Path(self.data_engine.workbook_dir) / "scenarios" / scenario_name
+        else:
+            output_dir = Path(output_dir)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        exported_files = {}
+
+        for table_name, df in tables.items():
+            if isinstance(df, str):
+                # If it's a string representation, skip CSV export
+                continue
+
+            csv_path = output_dir / f"{table_name}.csv"
+            df.to_csv(csv_path, index=False)
+            exported_files[table_name] = str(csv_path)
+
+        return exported_files
+
     def _generate_summary(self, plan: Dict[str, Any], metrics: Dict[str, Any]) -> str:
         """Generate natural language summary of scenario impact.
 
@@ -489,6 +531,11 @@ Generate the modification plan:
 
         print(f"  ✓ Scenario '{scenario_name}' created successfully\n")
 
+        # Convert DataFrames to string representation for display
+        tables_for_display = {}
+        for table_name, df in scenario_data["tables"].items():
+            tables_for_display[table_name] = str(df)
+
         return {
             "type": "scenario",
             "operation": "create",
@@ -496,6 +543,7 @@ Generate the modification plan:
             "parameters": parameters,
             "metrics": scenario_data["metrics"],
             "summary": scenario_data.get("summary", ""),
+            "tables": tables_for_display,
             "message": f"Scenario '{scenario_name}' created with parameters: {parameters}",
         }
 
