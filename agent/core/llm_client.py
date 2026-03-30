@@ -10,7 +10,7 @@ import google.generativeai as genai
 class LLMClient:
     """Wrapper for Google Generative AI (Gemini) API."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-pro"):
         """Initialize LLM client with Gemini API.
 
         Args:
