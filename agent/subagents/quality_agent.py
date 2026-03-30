@@ -136,10 +136,14 @@ If no specific table is mentioned, pick the first table.
         issues = []
 
         for col in df.columns:
-            null_count = df[col].isnull().sum()
+            null_indices = df[df[col].isnull()].index.tolist()
 
-            if null_count > 0:
+            if len(null_indices) > 0:
+                null_count = len(null_indices)
                 null_pct = null_count / len(df) * 100
+
+                # Get sample rows with null values
+                sample_rows = df.iloc[null_indices[:3]] if null_indices else pd.DataFrame()
 
                 issues.append(
                     {
@@ -148,6 +152,17 @@ If no specific table is mentioned, pick the first table.
                         "column": col,
                         "count": int(null_count),
                         "percentage": float(null_pct),
+                        "row_indices": null_indices[:10],  # First 10 rows with null values
+                        "total_affected_rows": len(null_indices),
+                        "locations": f"Rows: {', '.join(str(i) for i in null_indices[:5])}" +
+                                    (f", ... and {len(null_indices) - 5} more" if len(null_indices) > 5 else ""),
+                        "sample_rows": [
+                            {
+                                "row": int(idx),
+                                "values": {col_name: str(val) for col_name, val in sample_rows.loc[idx].items()}
+                            }
+                            for idx in sample_rows.index[:3]
+                        ] if not sample_rows.empty else [],
                         "description": f"Column '{col}' has {null_count} null values ({null_pct:.1f}%)",
                     }
                 )
@@ -164,37 +179,57 @@ If no specific table is mentioned, pick the first table.
             List of issues
         """
         issues = []
+        import re
 
         for col in df.columns:
             if df[col].dtype == "object":
-                # Sample non-null values
-                sample = df[col].dropna().astype(str).head(10)
+                # Get non-null values with their indices
+                non_null_mask = df[col].notna()
+                non_null_data = df[col][non_null_mask]
 
-                if len(sample) > 0:
+                if len(non_null_data) > 0:
                     # Check for different date formats
-                    date_patterns = [
-                        r"^\d{4}-\d{2}-\d{2}",  # YYYY-MM-DD
-                        r"^\d{2}/\d{2}/\d{4}",  # MM/DD/YYYY
-                        r"^\d{2}-\d{2}-\d{4}",  # DD-MM-YYYY
-                    ]
-
-                    import re
+                    date_patterns = {
+                        r"^\d{4}-\d{2}-\d{2}": "YYYY-MM-DD",
+                        r"^\d{2}/\d{2}/\d{4}": "MM/DD/YYYY",
+                        r"^\d{2}-\d{2}-\d{4}": "DD-MM-YYYY",
+                    }
 
                     patterns_found = {}
+                    pattern_indices = {}  # Track which rows match each pattern
 
-                    for pattern in date_patterns:
-                        matches = sample.str.contains(pattern, regex=True).sum()
-                        if matches > 0:
-                            patterns_found[pattern] = matches
+                    sample = non_null_data.astype(str).head(10)
+
+                    for pattern, pattern_name in date_patterns.items():
+                        # Find all rows matching this pattern
+                        mask = df[col].astype(str).str.contains(pattern, regex=True, na=False)
+                        matching_indices = df[mask].index.tolist()
+
+                        if len(matching_indices) > 0:
+                            patterns_found[pattern_name] = len(matching_indices)
+                            pattern_indices[pattern_name] = matching_indices[:5]  # Store first 5 rows
 
                     if len(patterns_found) > 1:
+                        # Get sample rows showing different formats
+                        sample_rows = []
+                        for fmt_name, indices in pattern_indices.items():
+                            for idx in indices[:1]:  # Just one row per format
+                                sample_rows.append({
+                                    "row": int(idx),
+                                    "format": fmt_name,
+                                    "value": str(df.loc[idx, col])
+                                })
+
                         issues.append(
                             {
                                 "type": "format_inconsistency",
                                 "severity": "medium",
                                 "column": col,
                                 "formats_found": len(patterns_found),
-                                "description": f"Column '{col}' has {len(patterns_found)} different date formats",
+                                "format_details": patterns_found,
+                                "row_indices": [idx for indices in pattern_indices.values() for idx in indices],
+                                "sample_rows": sample_rows,
+                                "description": f"Column '{col}' has {len(patterns_found)} different date formats: {', '.join(patterns_found.keys())}",
                             }
                         )
 
@@ -229,18 +264,41 @@ If no specific table is mentioned, pick the first table.
             lower_bound = Q1 - 1.5 * IQR
             upper_bound = Q3 + 1.5 * IQR
 
-            outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
+            outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
+            outlier_indices = df[outlier_mask].index.tolist()
+            outliers_df = df[outlier_mask]
 
-            if len(outliers) > 0:
+            if len(outlier_indices) > 0:
+                # Get sample rows with outlier values
+                sample_rows = []
+                for idx in outlier_indices[:3]:
+                    sample_rows.append({
+                        "row": int(idx),
+                        "value": float(df.loc[idx, col]),
+                        "deviation": f"{((df.loc[idx, col] - series.mean()) / series.std() * 100 if series.std() > 0 else 0):.1f}% above mean"
+                    })
+
                 issues.append(
                     {
                         "type": "outliers",
                         "severity": "low",
                         "column": col,
-                        "count": len(outliers),
-                        "percentage": float(len(outliers) / len(df) * 100),
-                        "examples": outliers[col].head(3).tolist(),
-                        "description": f"Column '{col}' has {len(outliers)} potential outliers",
+                        "count": len(outlier_indices),
+                        "percentage": float(len(outlier_indices) / len(df) * 100),
+                        "row_indices": outlier_indices[:10],  # First 10 outlier rows
+                        "total_affected_rows": len(outlier_indices),
+                        "locations": f"Rows: {', '.join(str(i) for i in outlier_indices[:5])}" +
+                                    (f", ... and {len(outlier_indices) - 5} more" if len(outlier_indices) > 5 else ""),
+                        "bounds": {
+                            "lower": float(lower_bound),
+                            "upper": float(upper_bound),
+                            "Q1": float(Q1),
+                            "Q3": float(Q3),
+                            "IQR": float(IQR)
+                        },
+                        "examples": outliers_df[col].head(3).tolist(),
+                        "sample_rows": sample_rows,
+                        "description": f"Column '{col}' has {len(outlier_indices)} potential outliers (values outside [{lower_bound:.2f}, {upper_bound:.2f}])",
                     }
                 )
 
@@ -258,32 +316,78 @@ If no specific table is mentioned, pick the first table.
         issues = []
 
         # Check for complete duplicates
-        complete_dupes = df.duplicated().sum()
+        dupe_mask = df.duplicated(keep=False)  # Mark all duplicates (including first)
+        dupe_indices = df[dupe_mask].index.tolist()
+        dupe_count = df.duplicated().sum()
 
-        if complete_dupes > 0:
+        if dupe_count > 0:
+            # Get sample duplicate rows
+            sample_rows = []
+            seen_values = set()
+
+            for idx in dupe_indices[:6]:  # Get up to 6 rows showing duplicates
+                row_tuple = tuple(df.loc[idx].values)
+                if row_tuple not in seen_values:
+                    sample_rows.append({
+                        "row": int(idx),
+                        "values": {col_name: str(val) for col_name, val in df.loc[idx].items()}
+                    })
+                    seen_values.add(row_tuple)
+                    if len(sample_rows) >= 2:  # Show just 2 different duplicate groups
+                        break
+
             issues.append(
                 {
                     "type": "duplicate_rows",
                     "severity": "high",
-                    "count": int(complete_dupes),
-                    "percentage": float(complete_dupes / len(df) * 100),
-                    "description": f"Found {complete_dupes} completely duplicate rows",
+                    "count": int(dupe_count),
+                    "percentage": float(dupe_count / len(df) * 100),
+                    "row_indices": dupe_indices[:10],  # First 10 duplicate rows
+                    "total_affected_rows": len(dupe_indices),
+                    "locations": f"Rows: {', '.join(str(i) for i in dupe_indices[:5])}" +
+                                (f", ... and {len(dupe_indices) - 5} more" if len(dupe_indices) > 5 else ""),
+                    "sample_rows": sample_rows,
+                    "description": f"Found {dupe_count} completely duplicate rows (appears {len(dupe_indices)} total times including originals)",
                 }
             )
 
         # Check for ID column duplicates
         for col in df.columns:
             if "id" in col.lower():
-                dupes = df[col].duplicated().sum()
+                dupe_mask = df[col].duplicated(keep=False)  # Mark all duplicates
+                dupe_indices = df[dupe_mask].index.tolist()
+                dupe_count = df[col].duplicated().sum()
 
-                if dupes > 0:
+                if dupe_count > 0:
+                    # Get sample rows with duplicate IDs
+                    sample_rows = []
+                    seen_ids = set()
+
+                    for idx in dupe_indices[:6]:
+                        val = df.loc[idx, col]
+                        if val not in seen_ids:
+                            sample_rows.append({
+                                "row": int(idx),
+                                "id_value": str(val),
+                                "all_values": {col_name: str(v) for col_name, v in df.loc[idx].items()}
+                            })
+                            seen_ids.add(val)
+                            if len(sample_rows) >= 2:  # Show 2 different duplicate IDs
+                                break
+
                     issues.append(
                         {
                             "type": "duplicate_values",
                             "severity": "high",
                             "column": col,
-                            "count": int(dupes),
-                            "description": f"Column '{col}' (ID) has {dupes} duplicate values",
+                            "count": int(dupe_count),
+                            "percentage": float(dupe_count / len(df) * 100),
+                            "row_indices": dupe_indices[:10],
+                            "total_affected_rows": len(dupe_indices),
+                            "locations": f"Rows: {', '.join(str(i) for i in dupe_indices[:5])}" +
+                                        (f", ... and {len(dupe_indices) - 5} more" if len(dupe_indices) > 5 else ""),
+                            "sample_rows": sample_rows,
+                            "description": f"Column '{col}' (ID) has {dupe_count} duplicate values across {len(dupe_indices)} rows",
                         }
                     )
 

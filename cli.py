@@ -235,7 +235,7 @@ def _display_quality_result(result: dict):
 
     rprint(f"[{score_color}]Quality Score: {quality_score:.0f}/100[/{score_color}]\n")
 
-    # Display issues
+    # Display issues with location information
     issues = result.get("issues", [])
 
     if issues:
@@ -251,11 +251,54 @@ def _display_quality_result(result: dict):
                 f"{issue.get('description', 'N/A')}"
             )
 
+            # Display location information
+            locations = issue.get("locations")
+            if locations:
+                rprint(f"     [dim]📍 {locations}[/dim]")
+
+            # Display sample rows with details
+            sample_rows = issue.get("sample_rows", [])
+            if sample_rows:
+                rprint(f"     [dim]Sample rows:[/dim]")
+                for sample in sample_rows[:2]:  # Show max 2 samples
+                    row_num = sample.get("row", "?")
+                    if "value" in sample:
+                        # For outliers
+                        val = sample.get("value")
+                        deviation = sample.get("deviation", "")
+                        rprint(f"       • Row {row_num}: {val} ({deviation})")
+                    elif "format" in sample:
+                        # For format inconsistency
+                        fmt = sample.get("format")
+                        val = sample.get("value")
+                        rprint(f"       • Row {row_num}: {val} [{fmt}]")
+                    elif "id_value" in sample:
+                        # For duplicate IDs
+                        id_val = sample.get("id_value")
+                        rprint(f"       • Row {row_num}: ID = {id_val}")
+                    else:
+                        # For missing values and other general cases
+                        values = sample.get("values", {})
+                        col_name = issue.get("column", "")
+                        if col_name and col_name in values:
+                            rprint(f"       • Row {row_num}: {col_name} = [NULL]")
+                        else:
+                            rprint(f"       • Row {row_num}")
+
+            # Display bounds for outliers
+            bounds = issue.get("bounds")
+            if bounds:
+                lower = bounds.get("lower", 0)
+                upper = bounds.get("upper", 0)
+                rprint(f"     [dim]Valid range: [{lower:.2f}, {upper:.2f}][/dim]")
+
+            rprint()  # Empty line for spacing
+
     # Display repair suggestions
     repairs = result.get("repairs", [])
 
     if repairs:
-        rprint(f"\n[cyan]Suggested Repairs:[/cyan]\n")
+        rprint(f"[cyan]Suggested Repairs:[/cyan]\n")
 
         for i, repair in enumerate(repairs[:5], 1):
             action = repair.get("action", "Unknown")
