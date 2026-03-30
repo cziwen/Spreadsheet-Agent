@@ -611,7 +611,18 @@ IMPORTANT:
                     if result is not None and "by" in params:
                         # Support ascending parameter (default True for backwards compatibility)
                         ascending = params.get("ascending", True)
-                        result = result.sort_values(by=params["by"], ascending=ascending)
+                        sort_col = params["by"]
+
+                        # Handle renamed columns from aggregation operations
+                        # If the column doesn't exist, try to find a renamed version
+                        if sort_col not in result.columns:
+                            # Look for columns that start with the original name followed by _
+                            matching_cols = [col for col in result.columns if col.startswith(f"{sort_col}_")]
+                            if matching_cols:
+                                sort_col = matching_cols[0]  # Use the first match
+
+                        if sort_col in result.columns:
+                            result = result.sort_values(by=sort_col, ascending=ascending)
 
                 elif operation == "limit":
                     # Limit results to top N rows (e.g., for "top 3 customers" queries)

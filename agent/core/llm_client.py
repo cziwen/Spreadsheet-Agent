@@ -10,12 +10,12 @@ import google.generativeai as genai
 class LLMClient:
     """Wrapper for Google Generative AI (Gemini) API."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-pro"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "models/gemini-3-flash-preview"):
         """Initialize LLM client with Gemini API.
 
         Args:
             api_key: Google API key. If None, reads from GOOGLE_API_KEY env var.
-            model: Model name (default: gemini-1.5-flash)
+            model: Model name (default: models/gemini-3-flash)
         """
         if api_key is None:
             api_key = os.getenv("GOOGLE_API_KEY")
