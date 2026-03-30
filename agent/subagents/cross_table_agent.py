@@ -380,7 +380,13 @@ IMPORTANT:
 
         try:
             result = self.llm.call_structured(prompt)
-            return result.get("steps", [])
+            # Handle both dict {"steps": [...]} and list [...] response formats
+            if isinstance(result, list):
+                return result
+            elif isinstance(result, dict):
+                return result.get("steps", [])
+            else:
+                return []
         except Exception as e:
             print(f"  Warning: Could not generate plan: {e}")
             # Return a simple default plan
