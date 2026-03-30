@@ -23,12 +23,18 @@ class CrossTableAgent:
         self.data_engine = data_engine
         self.semantic_agent = SemanticAgent(llm_client, data_engine)
 
-    def execute(self, query: str, workbook: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    def execute(
+        self,
+        query: str,
+        workbook: Dict[str, pd.DataFrame],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Execute cross-table analysis query.
 
         Args:
             query: User query
             workbook: Dictionary of tables
+            context: Optional query context with recent history
 
         Returns:
             Result dictionary
@@ -75,7 +81,7 @@ class CrossTableAgent:
 
         # Step 4: Generate execution plan
         print(f"  • Generating execution plan...")
-        plan = self._generate_plan(query, schemas, relationships, tables_needed, workbook)
+        plan = self._generate_plan(query, schemas, relationships, tables_needed, workbook, context)
 
         # Step 5: Execute plan
         print(f"  • Executing plan...\n")
@@ -232,6 +238,7 @@ Return an empty array if no tables are explicitly mentioned.
         relationships: List[dict],
         tables_needed: List[str],
         workbook: Dict[str, pd.DataFrame],
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Generate execution plan for the query.
 
@@ -241,12 +248,38 @@ Return an empty array if no tables are explicitly mentioned.
             relationships: Relationships between tables
             tables_needed: Tables to use
             workbook: Data
+            context: Optional query context with data dictionary and recent queries
 
         Returns:
             Execution plan (list of steps)
         """
+        # Build context section for prompt
+        context_section = ""
+        if context:
+            dd = context.get("data_dictionary", {})
+            if dd:
+                table_desc = "\n".join([
+                    f"  - {table}: {dd.get(table, {}).get('description', 'N/A')}"
+                    for table in tables_needed if table in dd
+                ])
+                if table_desc:
+                    context_section = f"""
+Table Descriptions (from business context):
+{table_desc}
+
+"""
+            recent = context.get("recent_queries", [])
+            if recent:
+                last_query = recent[-1]
+                context_section += f"""
+Previous Query for context:
+- Query: "{last_query.get('query', 'N/A')}"
+- Tables used: {', '.join(last_query.get('tables_used', []))}
+
+"""
+
         prompt = f"""
-User query: "{query}"
+{context_section}User query: "{query}"
 
 Available tables: {tables_needed}
 
@@ -269,7 +302,8 @@ Available operations:
 - filter: Filter rows by condition, params: {{"condition": "col > 100"}}
 - join: Join tables, params: {{"left_table": "t1", "right_table": "t2", "join_key": "id"}}
 - aggregate: Aggregate data, params: {{"table": "table_name" (if starting aggregate), "group_by": "col" (optional), "metrics": {{"col1": "sum", "col2": "mean"}}}}
-- sort: Sort results, params: {{"by": "column_name"}}
+- sort: Sort results, params: {{"by": "column_name", "ascending": true/false (optional, default true)}}
+- limit: Limit results to top N rows, params: {{"n": 1}}
 - outliers: Detect statistical outliers using IQR method, params: {{"column": "column_name"}}
 
 Example 1 - Global aggregation: "what is the total revenue"
@@ -285,7 +319,13 @@ Example 2 - With filter: "total revenue where status = paid"
   {{"operation": "aggregate", "params": {{"metrics": {{"revenue": "sum"}}}}, "description": "Sum revenue"}}
 ]
 
-Example 3 - With group_by: "revenue by category"
+Example 3 - With group_by and count: "count of customers by channel"
+[
+  {{"operation": "select", "params": {{"table": "customers"}}, "description": "Select customers"}},
+  {{"operation": "aggregate", "params": {{"group_by": "channel", "metrics": {{"customer_id": "count"}}}}, "description": "Count customers by channel"}}
+]
+
+Example 3b - With group_by: "revenue by category"
 [
   {{"operation": "select", "params": {{"table": "sales"}}, "description": "Select sales"}},
   {{"operation": "aggregate", "params": {{"group_by": "category", "metrics": {{"revenue": "sum"}}}}, "description": "Group by category"}}
@@ -304,7 +344,26 @@ Example 5 - Find statistical outliers: "Which orders have amounts that are stati
   {{"operation": "outliers", "params": {{"column": "amount"}}, "description": "Find orders with amounts outside normal range"}}
 ]
 
+Example 6 - Top N with filter and sort: "What is Alice's highest spending product?"
+[
+  {{"operation": "select", "params": {{"table": "orders"}}, "description": "Select orders"}},
+  {{"operation": "filter", "params": {{"condition": "name.str.contains('Alice', case=False)"}}, "description": "Filter to Alice's orders"}},
+  {{"operation": "sort", "params": {{"by": "amount", "ascending": false}}, "description": "Sort by amount descending"}},
+  {{"operation": "limit", "params": {{"n": 1}}, "description": "Take top 1 result"}}
+]
+
+Example 7 - Top 3 customers by revenue: "Show me the top 3 customers by total spending"
+[
+  {{"operation": "select", "params": {{"table": "orders"}}, "description": "Select orders"}},
+  {{"operation": "aggregate", "params": {{"group_by": "customer_id", "metrics": {{"amount": "sum"}}}}, "description": "Group by customer and sum spending"}},
+  {{"operation": "sort", "params": {{"by": "amount", "ascending": false}}, "description": "Sort by amount descending"}},
+  {{"operation": "limit", "params": {{"n": 3}}, "description": "Take top 3 results"}}
+]
+
 IMPORTANT:
+- For queries about "数量" (quantity/count), "个数" (number), or "多少" (how many), use "count" metric:
+  * "每个channel的顾客数量" -> group_by: "channel", metrics: {{"customer_id": "count"}}
+  * Only include the columns you're asked to calculate - don't add extra numeric columns
 - Always include a filter step if the query mentions conditions (e.g., "where", "channel=", "status is", month/date references)
 - Use == for equality comparisons in filter conditions
 - String values should be quoted with single quotes in conditions: 'value'
@@ -313,6 +372,10 @@ IMPORTANT:
   * "2024-03" (March 2024) -> extract month and year from query and create appropriate condition
   * Always convert month names to numbers (一月=1, 二月=2, 三月=3, 四月=4, etc.)
 - Check table schema to find date columns (usually named "date", "order_date", "created_at", etc.)
+- For queries asking for "highest", "lowest", "top N", "best", "worst", use sort + limit:
+  * "最高" (highest) -> sort with ascending=false, then limit to n=1
+  * "最低" (lowest) -> sort with ascending=true, then limit to n=1
+  * "Top 3" or "前3个" (top 3) -> sort with ascending=false, then limit to n=3
 """
 
         try:
@@ -466,15 +529,36 @@ IMPORTANT:
                                         if col_name in result.columns:
                                             cleaned_metrics[col_name] = func
 
-                                for col in result.columns:
-                                    if col not in cleaned_group_by:
-                                        if col in cleaned_metrics:
-                                            agg_dict[col] = cleaned_metrics[col]
-                                        elif pd.api.types.is_numeric_dtype(result[col]):
-                                            agg_dict[col] = "sum"
+                                # Only aggregate columns explicitly specified in metrics
+                                # Don't automatically add all numeric columns
+                                for col in cleaned_metrics:
+                                    agg_dict[col] = cleaned_metrics[col]
 
                                 if agg_dict:
                                     result = result.groupby(cleaned_group_by).agg(agg_dict).reset_index()
+
+                                    # Rename aggregated columns to be more descriptive
+                                    # e.g., "customer_id" with "count" -> "customer_count"
+                                    rename_dict = {}
+                                    for col, func in agg_dict.items():
+                                        if func in ["count", "size"]:
+                                            new_name = f"{col}_count"
+                                        elif func == "sum":
+                                            new_name = f"{col}_sum"
+                                        elif func in ["mean", "avg"]:
+                                            new_name = f"{col}_average"
+                                        elif func == "min":
+                                            new_name = f"{col}_min"
+                                        elif func == "max":
+                                            new_name = f"{col}_max"
+                                        else:
+                                            new_name = f"{col}_{func}"
+
+                                        if new_name != col:
+                                            rename_dict[col] = new_name
+
+                                    if rename_dict:
+                                        result = result.rename(columns=rename_dict)
                             else:
                                 # If no valid group_by columns, skip grouping
                                 pass
@@ -519,7 +603,16 @@ IMPORTANT:
 
                 elif operation == "sort":
                     if result is not None and "by" in params:
-                        result = result.sort_values(by=params["by"], ascending=True)
+                        # Support ascending parameter (default True for backwards compatibility)
+                        ascending = params.get("ascending", True)
+                        result = result.sort_values(by=params["by"], ascending=ascending)
+
+                elif operation == "limit":
+                    # Limit results to top N rows (e.g., for "top 3 customers" queries)
+                    if result is not None and "n" in params:
+                        n = params.get("n", 1)
+                        if isinstance(n, int) and n > 0:
+                            result = result.head(n)
 
                 elif operation == "outliers":
                     # Detect statistical outliers using IQR method

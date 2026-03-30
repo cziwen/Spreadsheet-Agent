@@ -3,9 +3,11 @@
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 import numpy as np
+
+from .context_manager import ContextManager
 
 
 class DataEngine:
@@ -21,6 +23,7 @@ class DataEngine:
         self.tables: Dict[str, pd.DataFrame] = {}
         self.scenarios: Dict[str, dict] = {}
         self.history: List[dict] = []
+        self.context_manager = ContextManager(workbook_path)
 
     def load_workbook(self) -> Dict[str, pd.DataFrame]:
         """Load all CSV files from workbook directory.
@@ -182,6 +185,27 @@ class DataEngine:
             "dtypes": df.dtypes.to_dict(),
             "sample_data": df.head(3).to_dict(orient="records"),
         }
+
+    # ============================================================================
+    # Context Management (Delegated to ContextManager)
+    # ============================================================================
+
+    def get_workbook_context(self) -> Dict[str, Any]:
+        """Get workbook context.
+
+        Returns:
+            Workbook context dictionary
+        """
+        return self.context_manager.load_workbook_context()
+
+    def update_workbook_context(self, key: str, value: Any) -> None:
+        """Update workbook context.
+
+        Args:
+            key: Context key
+            value: Context value
+        """
+        self.context_manager.update_workbook_metadata(key, value)
 
 
 class SemanticAnalyzer:

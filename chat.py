@@ -49,7 +49,7 @@ def initialize_session(workbook_path):
         workbook_path: Path to workbook directory
 
     Returns:
-        Initialized LeadAgent instance
+        Tuple of (Initialized LeadAgent instance, session_id)
 
     Raises:
         SystemExit: On fatal initialization errors
@@ -75,7 +75,13 @@ def initialize_session(workbook_path):
     try:
         llm = LLMClient(api_key=api_key)
         lead_agent = LeadAgent(llm, workbook_path=workbook_path)
-        return lead_agent
+
+        # Create new session
+        context_manager = lead_agent.data_engine.context_manager
+        session_id = context_manager.create_session()
+        lead_agent.set_session(session_id)
+
+        return lead_agent, session_id
     except Exception as e:
         rprint(f"[red]❌ Fatal error initializing agent: {str(e)}[/red]")
         sys.exit(1)
@@ -120,6 +126,9 @@ def show_help():
   [cyan]reload[/cyan]        Reload workbook data from disk
   [cyan]tables[/cyan]        Show available tables and columns
   [cyan]history[/cyan]       Show recent queries (last 10)
+  [cyan]context[/cyan]       Show current session context
+  [cyan]sessions[/cyan]      List recent sessions
+  [cyan]resume <id>[/cyan]   Resume a previous session (coming soon)
 
 [bold]Query Types:[/bold]
 
@@ -197,13 +206,94 @@ def show_history(lead_agent):
         rprint(f"  {i}. [{status_color}]{status}[/{status_color}] - {query}")
 
 
-def handle_command(command, lead_agent, workbook_path):
+def show_context(lead_agent, session_id):
+    """Display current session context.
+
+    Args:
+        lead_agent: Initialized LeadAgent instance
+        session_id: Current session ID
+    """
+    ctx_mgr = lead_agent.data_engine.context_manager
+
+    # Workbook context
+    wb_ctx = ctx_mgr.load_workbook_context()
+    wb_meta = wb_ctx.get("metadata", {})
+
+    context_text = f"""[bold cyan]Session Context[/bold cyan]
+
+[cyan]Session ID:[/cyan] {session_id}
+
+[cyan]Workbook Domain:[/cyan] {wb_meta.get('business_domain', 'Not set')}
+[cyan]Description:[/cyan] {wb_meta.get('description', 'Not set')}
+
+[bold cyan]Recent Queries[/bold cyan]
+{_format_recent_queries(ctx_mgr, session_id, limit=5)}
+"""
+
+    console.print(Panel(context_text, title="Context Information", style="cyan"))
+
+
+def _format_recent_queries(ctx_mgr, session_id, limit=5):
+    """Format recent queries for display.
+
+    Args:
+        ctx_mgr: ContextManager instance
+        session_id: Session ID
+        limit: Maximum number of queries to show
+
+    Returns:
+        Formatted string of recent queries
+    """
+    history = ctx_mgr.get_recent_history(session_id, limit=limit)
+    if not history:
+        return "[dim]No queries yet[/dim]"
+
+    lines = []
+    for i, entry in enumerate(history, 1):
+        status = "✓" if entry["status"] == "success" else "✗"
+        query = entry['query'][:50]
+        if len(entry['query']) > 50:
+            query += "..."
+        lines.append(f"  {i}. [{status}] {query}")
+
+    return "\n".join(lines)
+
+
+def show_sessions(lead_agent):
+    """Display recent sessions.
+
+    Args:
+        lead_agent: Initialized LeadAgent instance
+    """
+    ctx_mgr = lead_agent.data_engine.context_manager
+    sessions = ctx_mgr.list_sessions(limit=10)
+
+    if not sessions:
+        rprint("[yellow]⚠️  No sessions found[/yellow]")
+        return
+
+    table = Table(title="Recent Sessions", style="cyan")
+    table.add_column("Session ID", style="cyan")
+    table.add_column("Started", style="green")
+    table.add_column("Queries", style="yellow")
+
+    for session in sessions:
+        session_id = session.get("session_id", "N/A")
+        started = session.get("started_at", "N/A")[:19]  # Remove timestamp microseconds
+        query_count = str(session.get("query_count", 0))
+        table.add_row(session_id, started, query_count)
+
+    console.print(table)
+
+
+def handle_command(command, lead_agent, workbook_path, session_id):
     """Handle special commands.
 
     Args:
         command: User command
         lead_agent: Initialized LeadAgent instance
         workbook_path: Path to workbook
+        session_id: Current session ID
 
     Returns:
         True if command was handled, False if unknown command
@@ -238,18 +328,33 @@ def handle_command(command, lead_agent, workbook_path):
         show_history(lead_agent)
         return True
 
+    elif cmd == 'context':
+        show_context(lead_agent, session_id)
+        return True
+
+    elif cmd == 'sessions':
+        show_sessions(lead_agent)
+        return True
+
+    elif cmd.startswith('resume '):
+        session_id_to_resume = cmd.replace('resume ', '').strip()
+        rprint(f"[yellow]⚠️  Resume session functionality coming soon[/yellow]")
+        rprint(f"[dim]Session ID: {session_id_to_resume}[/dim]")
+        return True
+
     else:
         return False
 
 
-def chat_loop(lead_agent, workbook_path):
+def chat_loop(lead_agent, workbook_path, session_id):
     """Main interactive chat loop.
 
     Args:
         lead_agent: Initialized LeadAgent instance
         workbook_path: Path to workbook
+        session_id: Current session ID
     """
-    command_list = ['exit', 'quit', 'help', 'clear', 'reload', 'tables', 'history']
+    command_list = ['exit', 'quit', 'help', 'clear', 'reload', 'tables', 'history', 'context', 'sessions']
 
     try:
         while True:
@@ -262,13 +367,14 @@ def chat_loop(lead_agent, workbook_path):
                     continue
 
                 # Handle commands
-                if user_input.lower() in command_list:
-                    handle_command(user_input, lead_agent, workbook_path)
+                cmd_lower = user_input.lower()
+                if cmd_lower in command_list or cmd_lower.startswith('resume '):
+                    handle_command(user_input, lead_agent, workbook_path, session_id)
                     continue
 
                 # Process query
                 try:
-                    result = lead_agent.process_query(user_input)
+                    result = lead_agent.process_query(user_input, use_context=True)
                     _display_result(result)
                 except KeyboardInterrupt:
                     rprint("\n[yellow]⚠️  Query interrupted[/yellow]")
@@ -297,14 +403,16 @@ def main():
     args = parse_arguments()
 
     # Initialize session (exits on fatal error)
-    lead_agent = initialize_session(args.workbook)
+    lead_agent, session_id = initialize_session(args.workbook)
 
     # Show welcome banner
     if not args.no_banner:
         show_welcome(lead_agent, args.workbook)
+        # Also show session ID in welcome
+        rprint(f"[dim]Session ID: {session_id}[/dim]\n")
 
     # Enter chat loop
-    chat_loop(lead_agent, args.workbook)
+    chat_loop(lead_agent, args.workbook, session_id)
 
 
 if __name__ == "__main__":

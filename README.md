@@ -36,10 +36,11 @@ python chat.py --workbook data/my_workbook
 - `help` - Show available commands and query types
 - `tables` - List all tables with row counts and columns
 - `history` - View recent queries and their status
+- `context` - Display current session context and metadata
+- `sessions` - List all previous sessions
 - `reload` - Reload workbook data from disk
 - `clear` - Clear screen
 - `exit` / `quit` - Exit the chat session
-- "统计订单表的订单总数" - a query
 
 ### Workbooks
 
@@ -69,6 +70,27 @@ python chat.py --workbook data/my_workbook
 - Tracks operation history
 - Provides table information and metadata
 - SemanticAnalyzer class: rule-based fallback
+
+### 2.5 **Context Management System** (`agent/core/context_manager.py`)
+- Session Management: Creates unique sessions with persistent conversation history
+- Workbook Context: Stores business domain, data dictionary, and learned patterns
+- Conversation Tracking: Records multi-turn query history for context-aware responses
+- Pattern Learning: Automatically learns common table joins and frequent query patterns
+- Context Injection: Automatically enriches query classification and planning with business context
+
+**Three-Layer Architecture:**
+1. Workbook Context (Persistent): Business domain, data dictionary, learned patterns
+2. Session Context (Temporary): Conversation history, current focus, active tables
+3. Query Context (Ephemeral): Recent queries for follow-up support
+
+**Example Usage:**
+```
+Session 1:
+>>> Show me total sales by customer
+>>> Which of those customers have orders over $500?  ← Uses context from previous query
+>>> context  ← Display current session context
+>>> sessions ← List all previous sessions
+```
 
 ### 3. **Lead Agent** (`agent/lead_agent.py`)
 - **Main orchestrator** that routes queries to subagents
